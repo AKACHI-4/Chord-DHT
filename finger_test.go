@@ -23,7 +23,6 @@ func TestNewFingerEntry(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		nextHash := fingerID(id, i, hashSize)
 		aInt := (&big.Int{}).SetBytes(nextHash)
-
 		fmt.Printf("%d, %d %d\n", xInt, aInt, hashSize)
 	}
 }
@@ -51,7 +50,7 @@ func Test_newFingerEntry(t *Testing.T) {
 	}
 }
 
-func Test_fingerId(t *testing.T) {
+func Test_fingerID(t *testing.T) {
 	type args struct {
 		n []byte
 		i int
