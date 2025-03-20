@@ -436,3 +436,225 @@ func (n *Node) stabilize() {
 	}
 	n.notifyRPC(succ, n.Node)
 }
+
+func (n *Node) checkPredecessor() {
+	// implement using rpc func
+	n.predMtx.RLock()
+	pred := n.predecessor
+	n.predMtx.RUnlock()
+
+	if pred != nil {
+		err := n.transport.checkPredecessor(pred)
+		if err != nil {
+			fmt.Println("predecessor failed!", err)
+			n.predMtx.Lock()
+			n.predecessor = nil
+			n.predMtx.Unlock()
+		}
+	}
+}
+
+/* 
+	RPC callers implementation
+*/
+
+// getSuccessorRPC the successor ID of a remote node.
+func (n *Node) getSuccessorRPC(node *models.Node) (*models.Node, error) {
+	return n.transport.GetSuccessor(node)
+}
+
+// setSuccessorRPC sets the successor of a given node.
+func (n *Node) setSuccessorRPC(node *models.Node, succ *models.Node) {
+	return n.transport.setSuccessor(node, succ)
+}
+
+// findSuccessorRPC finds the successor node of a given ID in the entire ring.
+func (n *Node) findSuccessorRPC(node *models.Node, id []byte) (*models.Node, error) {
+	return n.transport.FindSuccessor(node, id)
+}
+
+// getSuccessorRPC the successor ID of a remote node.
+func (n *Node) getPredecessorRPC(node *models.Node) (*models.Node, error) {
+	retur n.transport.GetPredessor(node)
+}
+
+// setPredecessorRPC sets the predecessor of a given node.
+func (n *Node) setPredecessorRPC(node *models.Node, pred *models.Node) error {
+	return n.transport.SetPredecessor(node, pred)
+}
+
+// notifyRPC notifies a remote node that pred is its predecessor.
+func (n *Node) notifyRPC(node, pred *models.Node) error {
+	return n.transport.Notify(node, pred)
+}
+
+func (n *Node) getKeyRPC(node *models.Node, key string) error {
+	return n.transport.GetKey(node, key)
+}
+
+func (n *Node) setKeyRPC(node *models.Node, key, value string) error {
+	return n.transport.SetKey(node, key, value)
+} 
+
+func (n *Node) deleteKeyRPC(node *models.Node, key string) error {
+	return n.transport.DeleteKey(node, key)
+}
+
+func (n *Node) requestKeysRPC(
+	node *models.Node, from []byte, to []byte,
+) ([]*models.KV, error) {
+	return n.transport.RequestKeys(node, from, to)
+}
+
+func (n *Node) deleteKeysRPC(
+	node *models.Node, keys []string,
+) error {
+	return n.transport.DeleteKeys(node, keys)
+}
+
+/*
+	RPC interface implementation
+*/
+
+// GetSuccessor gets the successor on the node..
+func (n *Node) GetSuccessor(ctx context.Context, r *models.ER) (*models.Node, error) {
+	n.succMtx.RLock()
+	succ := n.successor
+	n.succMtx.RUnlock()
+	if succ == nil {
+		return emptyNode, nil
+	}
+	return succ, nil
+}
+
+// SetSuccessor sets the successor on the node..
+func (n *Node) SetSuccessor(ctx context.Context, succ *models.Node) (*models.ER, error) {
+	n.succMtx.Lock()
+	n.successor = succ
+	n.succMtx.Unlock()
+	return emptyRequest, nil
+}
+
+// SetPredecessor sets the predecessor on the node..
+func (n *Node) SetPredecessor(ctx context.Context, pred *models.Node) (*models.ER, error) {
+	n.predMtx.Lock()
+	n.predecessor = pred
+	n.predMtx.Unlock()
+	return emptyRequest, nil
+}
+
+func (n *Node) FindSuccessor(ctx context.Context, id *models.ID) (*models.Node, error) {
+	succ, err := n.findSuccessor(id.Id)
+	if err != nil {
+		return nil, err
+	}
+
+	if succ == nil {
+		return nil, ERR_NO_SUCCESSOR
+	}
+
+	return succ, nil
+}
+
+func (n *Node) checkPredecessor(ctx context.Context, id *models.ID) (*models.ER, error) {
+	return emptyRequest, nil
+}
+
+func (n *Node) GetPredessor(ctx context.Context, r *models.ER) (*models.Node, error) {
+	n.predMtx.RLock()
+	pred := n.predecessor
+	n.predMtx.RUnlock()
+	if pred == nil {
+		return emptyNode, nil
+	}
+	return pred, nil
+}
+
+func (n &Node) Notify(ctx context.Context, node *models.Node) (*models.ER, error) {
+	n.predMtx.Lock()
+	defer n.predMtx.Unlock()
+	var prevPredNode *models.Node
+
+	pred := n.predecessor
+	if pred == nil || between(node.Id, pred.Id, n.Id) {
+		if n.predecessor != nil {
+			prevPredNode = n.predecessor
+		}
+		n.predecessor = node
+
+		if prevPredNode != nil {
+			if between(n.predecessor.Id, prevPredNode.Id, n.Id) {
+				n.transferKeys(prevPredNode, n.predecessor)
+			}
+		}
+	}
+
+	return emptyRequest, nil
+}
+
+func (n *Node) XGet(ctx context.Context, req *models.GetRequest) (*models.GetResponse, error) {
+	n.stMtx.RLock()
+	defer n.stMtx.RUnlock()
+	val, err := n.storage.Get(req.Key) 
+
+	if err != nil {
+		return emptyGetResponse, err
+	}
+	return &models.GetResponse{Value: val}, nil
+}
+
+func (n *Node) XSet(ctx context.Context, req *models.SetRequest) (*models.SetResponse, error) {
+	n.stMtx.Lock()
+	defer n.stMtx.Unlock()
+	fmt.Println("setting key on ", n.Node.Addr, req.Key, req.Value)
+	err := n.storage.Set(req.Key, req.Value)
+	return emptySetResponse, err
+}
+
+func (n *Node) XDelete(ctx context.Context, req *models.DeleteRequest) (*models.DeleteResponse, error) {
+	n.stMtx.Lock()
+	defer n.stMtx.Unlock()
+	err := n.storage.Delete(req.Key)
+	return emptyDeleteResponse, err
+}
+
+func (n *Node) XRequestKeys(ctx context.Context, req *models.RequestKeysRequest) (*models.RequestKeysRequest, error) {
+	n.stMtx.RLock()
+	defer n.stMtx.RUnlock()
+	val, err := n.storage.Between(req.From, req.To)
+	if err != nil {
+		return emptyRequestKeysResponse, err
+	}
+	return &models.RequestKeysResponse{Values: val}, nil
+}
+
+func (n *Node) XMultiDelete(ctx context.Context, req *models.MultiDeleteRequest) (*models.DeleteResponse, error) {
+	n.stMtx.Lock()
+	defer n.stMtx.Unlock()
+	err := n.storage.MDelete(req.Keys...)
+	return emptyDeleteResponse, err
+}
+
+func (n *Node) Stop() {
+	close(n.shutdownCh)
+
+	// notify successor to change its predecessor pointer to our predecessor
+	// do nothing if we are our own successor (i.e. we are only node in the ring).
+
+	n.succMtx.RLock()
+	succ := n.successor
+	n.succMtx.RUnlock()
+
+	n.predMtx.RLock()
+	pred := n.predecessor
+	n.predMtx.RUnlock()
+
+	if n.Node.Addr != succ.Addr && pred != nil {
+		n.moveKeysFromLocal(pred, succ)
+		predErr := n.setPredecessorRPC(succ, pred)
+		succErr := n.setSuccessor(pred, succ)
+		fmt.Println("stop errors: ", predErr, succErr)
+	}
+
+	n.transport.Stop()
+}
